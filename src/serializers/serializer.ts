@@ -1,4 +1,6 @@
+import { ILinkBuilderConfig } from "../types";
 import Password from "../attribute-types/password";
+import {  LinkBuilder } from "../link-builder";
 import Resource from "../resource";
 import {
   DEFAULT_PRIMARY_KEY,
@@ -11,8 +13,17 @@ import {
 import pick from "../utils/pick";
 import { camelize, classify, pluralize, underscore } from "../utils/string";
 import unpick from "../utils/unpick";
+import { Link } from "../types";
 
 export default class JsonApiSerializer implements IJsonApiSerializer {
+  linkBuilder: LinkBuilder;
+
+  initLinkBuilder(linkBuilderConfig: ILinkBuilderConfig) {
+    this.linkBuilder = new LinkBuilder(linkBuilderConfig);
+
+    return this.linkBuilder;
+  }
+
   resourceTypeToTableName(resourceType: string): string {
     return underscore(pluralize(resourceType));
   }
@@ -82,7 +93,7 @@ export default class JsonApiSerializer implements IJsonApiSerializer {
         ...relationships,
         [relationship.name]: {
           id: data.attributes[relationship.key],
-          type: schemaRelationships[relationship.name].type().type
+          type: schemaRelationships[relationship.name].type().type,
         }
       }),
       Object.entries(data.relationships as EagerLoadedData).reduce(
@@ -114,22 +125,61 @@ export default class JsonApiSerializer implements IJsonApiSerializer {
       .reduce((keyValues, keyValue) => ({ ...keyValues, ...keyValue }), {});
 
     Object.keys(data.relationships)
-      .filter(relName => data.relationships[relName])
+      .filter(relName => data.relationships?.[relName])
       .forEach(relName => {
         const fkName = schemaRelationships[relName].belongsTo
           ? DEFAULT_PRIMARY_KEY
           : schemaRelationships[relName].type().schema.primaryKeyName || DEFAULT_PRIMARY_KEY;
 
+        const serializedData = this.serializeRelationship(
+          (data.relationships?.[relName] as unknown) as Resource | Resource[],
+          schemaRelationships[relName].type(),
+          fkName
+        );
+
+        const serializedLinks = this.serializeRelationshipLinks(data, relName, schemaRelationships[relName].excludeLinks);
+
         data.relationships[relName] = {
-          data: this.serializeRelationship(
-            (data.relationships[relName] as unknown) as Resource | Resource[],
-            schemaRelationships[relName].type(),
-            fkName
-          )
+          ...(Object.keys(serializedLinks).length > 0 && { links: serializedLinks }),
+          data: serializedData,
         };
       });
 
+    const links = this.serializeResourceLinks(data, resourceType.excludeLinks);
+
+    if (Object.keys(links).length > 0) {
+      data.links = links;
+    }
+
     return data;
+  }
+
+  serializeResourceLinks(data:Resource, excludeLinks?: Array<string>) {
+    if (!this.linkBuilder) {
+      throw new Error('LinkBuilder is not initialized!')
+    }
+
+    const links = unpick({
+      /* TODO find a way to access req params!
+       * Maybe we should pass down the whole OperationResult object to the serializer.
+       **/
+      self: this.linkBuilder.selfLink(data.type, data.id),
+    }, excludeLinks) as Record<string, Link>;
+
+    return links;
+  }
+
+  serializeRelationshipLinks(primaryData: Resource, relName: string, excludeLinks?: Array<string>) {
+    if (!this.linkBuilder) {
+      throw new Error('LinkBuilder is not initialized!')
+    }
+
+    const links = unpick({
+      self: this.linkBuilder.relationshipsSelfLink(primaryData.type, primaryData.id, relName),
+      related: this.linkBuilder.relationshipsRelatedLink(primaryData.type, primaryData.id, relName)
+    }, excludeLinks) as Record<string, Link>;
+
+    return links;
   }
 
   serializeRelationship(
@@ -188,7 +238,7 @@ export default class JsonApiSerializer implements IJsonApiSerializer {
                       )
                     ])
                   }),
-                  relatedResourceClass
+                  relatedResourceClass,
                 ),
                 type: relatedResourceClass.type
               } as Resource;
@@ -216,7 +266,7 @@ export default class JsonApiSerializer implements IJsonApiSerializer {
                         // A drunk Santiago walks in the bar...
                         relationships: {} // nestedResources.filter
                       }),
-                      subResourceClass
+                      subResourceClass,
                     ),
                     type: subResourceClass.type
                   } as Resource;

@@ -16,17 +16,21 @@ import User from "./resources/user";
 import Comment from "./resources/comment";
 import Vote from "./resources/vote";
 import Random from "./resources/random";
+import Link from "./resources/link";
 
 import UserProcessor from "./processors/user";
 import ArticleProcessor from "./processors/article";
 import VoteProcessor from "./processors/vote";
 import RandomProcessor from "./processors/random";
+import LinkProcessor from "./processors/link";
+import Book from "./resources/book";
 
 const app = new Application({
   namespace: "api",
-  types: [Article, Comment, Vote, Random],
-  processors: [ArticleProcessor, VoteProcessor, RandomProcessor],
+  types: [Article, Comment, Vote, Random, Link, Book],
+  processors: [ArticleProcessor, VoteProcessor, RandomProcessor, LinkProcessor],
   defaultProcessor: KnexProcessor,
+  baseUrl: process.env.NODE_ENV === 'test' ? new URL('http://localhost:3000') : undefined,
   transportLayerOptions: {
     httpStrictMode: true,
   }

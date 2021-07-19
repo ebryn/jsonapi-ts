@@ -18,6 +18,8 @@ import pick from "../utils/pick";
 import promiseHashMap from "../utils/promise-hash-map";
 import OperationProcessor from "./operation-processor";
 import { KnexOperators as operators } from "../utils/operators";
+import { ResourceOperationResult, ResourceListOperationResult } from "../operation-result";
+import { OperationResult } from "..";
 
 const getWhereMethod = (value: string, operator: string) => {
   if (value !== "null") {
@@ -126,11 +128,17 @@ export default class KnexProcessor<ResourceT extends Resource> extends Operation
     return eagerlyLoadedData;
   }
 
-  protected getColumns(serializer: IJsonApiSerializer, fields = {}): string[] {
+  protected getColumns(serializer: IJsonApiSerializer, params: JsonApiParams = {}): string[] {
+    const { fields = {}, include = [] } = params;
     const { type, schema } = this.resourceClass;
     const { attributes, relationships, primaryKeyName } = schema;
     const relationshipsKeys = Object.entries(relationships)
-      .filter(([, value]) => value.belongsTo)
+      .filter(([relName, value]) => {
+        const isIncluded = include.includes(relName);
+        const isInSparseFieldsets = fields[type]?.includes(relName);
+
+        return isIncluded || isInSparseFieldsets|| value.belongsTo && value.alwaysIncludeLinkageData;
+      })
       .map(
         ([key, value]) =>
           value.foreignKeyName || serializer.relationshipToColumn(key, primaryKeyName || DEFAULT_PRIMARY_KEY)
@@ -146,25 +154,39 @@ export default class KnexProcessor<ResourceT extends Resource> extends Operation
     ];
   }
 
-  async get(op: Operation): Promise<HasId[] | HasId> {
+  async get(op: Operation): Promise<OperationResult> {
     const { params, ref } = op;
     const { id } = ref;
     const primaryKey = this.resourceClass.schema.primaryKeyName || DEFAULT_PRIMARY_KEY;
     const filters = params ? { [primaryKey]: id, ...(params.filter || {}) } : { [primaryKey]: id };
 
-    const records: KnexRecord[] = await this.getQuery()
-      .where(queryBuilder => this.filtersToKnex(queryBuilder, filters))
+    const recordsQuery = this.getQuery()
+      .where(queryBuilder => this.filtersToKnex(queryBuilder, filters));
+
+    // TODO: skip this query if not needed
+    const { recordCount } = await this.getQuery()
+      .count('* as recordCount')
+      .from(recordsQuery.clone().offset(0).clearOrder())
+      .first() as { recordCount: number };
+
+    const records: KnexRecord[] = await recordsQuery
       .modify(queryBuilder => this.optionsBuilder(queryBuilder, params || {}))
-      .select(this.getColumns(this.appInstance.app.serializer, (params || {}).fields));
+      .select(this.getColumns(this.appInstance.app.serializer, params));
 
     if (!records.length && id) {
       throw JsonApiErrors.RecordNotExists();
     }
 
     if (id) {
-      return records[0];
+      return new ResourceOperationResult(records[0]);
     }
-    return records;
+
+    return new ResourceListOperationResult(
+      records,
+      {
+        recordCount,
+      }
+    );
   }
 
   async remove(op: Operation): Promise<void> {
@@ -187,7 +209,7 @@ export default class KnexProcessor<ResourceT extends Resource> extends Operation
       .then(() => undefined);
   }
 
-  async update(op: Operation): Promise<HasId> {
+  async update(op: Operation): Promise<ResourceOperationResult> {
     const { params, ref } = op;
     const data = op.data as Resource;
     const { id } = ref;
@@ -209,13 +231,15 @@ export default class KnexProcessor<ResourceT extends Resource> extends Operation
       throw JsonApiErrors.RecordNotExists();
     }
 
-    return await this.getQuery()
+    const record = await this.getQuery()
       .where({ [primaryKey]: id })
       .select(this.getColumns(this.appInstance.app.serializer))
       .first();
+
+    return new ResourceOperationResult(record);
   }
 
-  async add(op: Operation): Promise<HasId> {
+  async add(op: Operation): Promise<ResourceOperationResult> {
     const primaryKeyName = this.resourceClass.schema.primaryKeyName || DEFAULT_PRIMARY_KEY;
     const data = op.data as Resource;
 
@@ -231,10 +255,12 @@ export default class KnexProcessor<ResourceT extends Resource> extends Operation
 
     const ids = await this.getQuery().insert(dataToInsert, primaryKeyName);
 
-    return await this.getQuery()
+    const record = await this.getQuery()
       .whereIn(primaryKeyName, ids)
       .select(this.getColumns(this.appInstance.app.serializer))
       .first();
+
+    return new ResourceOperationResult(record);
   }
 
   get tableName() {
@@ -313,9 +339,17 @@ export default class KnexProcessor<ResourceT extends Resource> extends Operation
       });
     }
 
+    let offset = 0;
+    let limit = this.appInstance.app.defaultPageSize;
+
     if (page) {
-      queryBuilder.offset(page.offset || page.number * page.size).limit(page.limit || page.size);
+      offset = page.offset || (page.number - 1) * page.size;
+      limit = page.limit || page.size;
     }
+
+    // TODO use paginator.apply(queryBuilder) instead!!
+
+    queryBuilder.offset(offset).limit(limit);
   }
 
   async eagerFetchRelationship(

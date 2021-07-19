@@ -1,4 +1,4 @@
-import {Knex} from "knex";
+import { Knex } from "knex";
 import Addon from "./addon";
 import ApplicationInstance from "./application-instance";
 import { canAccessResource } from "./decorators/authorize";
@@ -6,8 +6,11 @@ import KnexProcessor from "./processors/knex-processor";
 import OperationProcessor from "./processors/operation-processor";
 import Resource from "./resource";
 import JsonApiSerializer from "./serializers/serializer";
-import { AddonOptions, ApplicationAddons, ApplicationServices, IJsonApiSerializer, Operation, OperationResponse, ResourceSchemaRelationship, NoOpTransaction, TransportLayerOptions } from "./types";
+import { AddonOptions, ApplicationAddons, ApplicationServices, IJsonApiSerializer, Operation, OperationResponse, ResourceSchemaRelationship, NoOpTransaction, TransportLayerOptions, JsonApiParams } from "./types";
 import flatten from "./utils/flatten";
+import { ApplicationSettings, OperationResult } from ".";
+import { PagedPaginator, Paginator } from "./paginatior";
+import { ResourceListOperationResult, ResourceOperationResult } from "./operation-result";
 
 export default class Application {
   namespace: string;
@@ -18,16 +21,11 @@ export default class Application {
   services: ApplicationServices;
   addons: ApplicationAddons;
   transportLayerOptions: TransportLayerOptions;
+  defaultPaginator: typeof Paginator;
+  defaultPageSize: number;
+  maximumPageSize: number;
 
-  constructor(settings: {
-    namespace?: string;
-    types?: typeof Resource[];
-    processors?: typeof OperationProcessor[];
-    defaultProcessor?: typeof OperationProcessor;
-    serializer?: typeof JsonApiSerializer;
-    services?: {};
-    transportLayerOptions?: TransportLayerOptions;
-  }) {
+  constructor(settings: ApplicationSettings) {
     this.namespace = settings.namespace || "";
     this.types = settings.types || [];
     this.processors = settings.processors || [];
@@ -39,6 +37,14 @@ export default class Application {
       httpBodyPayload: '1mb',
       httpStrictMode: false
     };
+    this.defaultPaginator = settings.defaultPaginator || PagedPaginator;
+    this.defaultPageSize = settings.defaultPageSize || 100;
+    this.maximumPageSize = settings.maximumPageSize || 500;
+
+    this.serializer.initLinkBuilder({
+      baseUrl: settings.baseUrl,
+      namespace: settings.namespace,
+    });
   }
 
   use(addon: typeof Addon, options: AddonOptions = {}) {
@@ -53,7 +59,7 @@ export default class Application {
 
   async executeOperations(
     ops: Operation[],
-    applicationInstance = new ApplicationInstance(this)
+    applicationInstance = new ApplicationInstance(this),
   ): Promise<OperationResponse[]> {
     applicationInstance.transaction = await this.createTransaction();
 
@@ -117,13 +123,13 @@ export default class Application {
             { ...op, op: "get" },
             resourceClass
           );
-          const result = (await processor.execute(deserializedOriginalOperation)) as Resource;
+          const result = (await processor.execute(deserializedOriginalOperation)) as ResourceOperationResult;
 
           relatedOp = {
             ...op,
             ref: {
               type: relatedResourceClass.type,
-              id: result.attributes[
+              id: result.resource?.attributes[
                 resourceClass.schema.relationships[op.ref.relationship].foreignKeyName ||
                 this.serializer.relationshipToColumn(op.ref.relationship)
               ] as string
@@ -135,14 +141,14 @@ export default class Application {
         const relatedProcessor = await this.processorFor(relatedResourceClass.type, processor.appInstance) as OperationProcessor<Resource>;
         const result = await relatedProcessor.execute(deserializedOperation);
 
-        return this.buildOperationResponse(result, processor.appInstance);
+        return this.buildOperationResponse(result, processor.appInstance, op.params);
       }
     }
 
     const deserializedOperation = await this.serializer.deserializeResource(op, resourceClass);
     const result = await processor.execute(deserializedOperation);
 
-    return this.buildOperationResponse(result, processor.appInstance);
+    return this.buildOperationResponse(result, processor.appInstance, op.params);
   }
 
   async createTransaction(): Promise<Knex.Transaction | NoOpTransaction> {
@@ -193,22 +199,26 @@ export default class Application {
   }
 
   async buildOperationResponse(
-    data: Resource | Resource[] | void,
-    appInstance: ApplicationInstance
+    result: OperationResult,
+    appInstance: ApplicationInstance,
+    params?: JsonApiParams,
   ): Promise<OperationResponse> {
-    let resourceType: string | null;
+    let resourceType: string | undefined;
+    let allIncluded: Resource[] = [];
 
-    if (Array.isArray(data)) {
-      resourceType = data[0] ? data[0].type : null;
-    } else if (data) {
-      resourceType = data.type;
+    if (result instanceof ResourceListOperationResult) {
+      resourceType = result.resources?.[0]?.type;
+      allIncluded = !resourceType ? [] : flatten(
+        this.serializer.serializeIncludedResources(result.resources, await this.resourceFor(resourceType)) || []
+      )
+    } else if (result instanceof ResourceOperationResult) {
+      resourceType = result.resource?.type;
+      allIncluded = !resourceType ? [] : flatten(
+        this.serializer.serializeIncludedResources(result.resource, await this.resourceFor(resourceType)) || []
+      )
     } else {
-      resourceType = null;
+      resourceType = undefined;
     }
-
-    const allIncluded: Resource[] = !resourceType ? [] : flatten(
-      this.serializer.serializeIncludedResources(data, await this.resourceFor(resourceType)) || []
-    );
 
     const included: Resource[] = [];
 
@@ -226,31 +236,66 @@ export default class Application {
       })
     );
 
-    const serializedResources = await this.serializeResources(data);
+    const { data, links } = await this.serializeResources(result, params);
 
-    return included.length ? { included, data: serializedResources } : { data: serializedResources };
+    return {
+      data,
+      ...(included.length ? { included } : {}),
+      links,
+    } as any;
   }
 
-  async serializeResources(data: Resource | Resource[] | void) {
-    if (!data) {
-      return null;
-    }
-
-    if (Array.isArray(data)) {
-      if (!data.length) {
-        return [];
+  async serializeResources(result: OperationResult, params?: JsonApiParams) {
+    if (result instanceof ResourceListOperationResult) {
+      if (!result.resources) {
+        return {
+          data: []
+        };
       }
 
-      const resource = await this.resourceFor(data[0].type);
-
-      return data.filter(
+      const resourceType = result.resources?.[0]?.type;
+      const resource = await this.resourceFor(resourceType);
+      console.log(resourceType, resource)
+      const serializedData = result.resources.filter(
         record => !record.preventSerialization
       ).map(
         record => this.serializer.serializeResource(record, resource)
       );
+
+      const paginator = new (this.defaultPaginator)(
+        params,
+        {
+          defaultPageSize: this.defaultPageSize,
+          maximumPageSize: this.maximumPageSize,
+        }
+      );
+      const paginationParams = paginator.linksPageParams(result.recordCount as number);
+
+      const paginationLinks = Object.keys(paginationParams).reduce((prev, current) => {
+        prev[current] = this.serializer.linkBuilder.queryLink(resourceType, { ...params, page: paginationParams[current] });
+
+        return prev;
+      }, {});
+
+      return {
+        data: serializedData,
+        links: {
+          self: this.serializer.linkBuilder.queryLink(resourceType, params),
+          ...paginationLinks,
+        }
+      };
     }
 
-    const resource = await this.resourceFor(data.type);
-    return this.serializer.serializeResource(data, resource);
+    if (!result.resource) {
+      return {
+        data: null
+      };
+    }
+
+    const resource = await this.resourceFor(result.resource.type);
+
+    return {
+      data: this.serializer.serializeResource(result.resource, resource),
+    };
   }
 }

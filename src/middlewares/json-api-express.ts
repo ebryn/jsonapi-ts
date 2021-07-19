@@ -26,7 +26,8 @@ export default function jsonApiExpress(app: Application, ...middlewares: express
   };
 
   const jsonApiExpress = async (req: express.Request, res: express.Response, next: () => any) => {
-    const appInstance = new ApplicationInstance(app);
+    const baseUrl = new URL(`${req.protocol}://${req.get("host")}`);
+    const appInstance = new ApplicationInstance(app, baseUrl);
 
     try {
       await authenticate(appInstance, req);

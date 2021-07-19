@@ -16,6 +16,14 @@ const STATUS_MAPPING = {
   DELETE: 204
 };
 
+const OP_MAPPING = {
+  GET: "get",
+  POST: "add",
+  PATCH: "update",
+  PUT: "update",
+  DELETE: "remove"
+}
+
 async function authenticate(appInstance: ApplicationInstance, request: VendorRequest) {
   const authHeader = request.headers.authorization;
   let currentUser: User | undefined;
@@ -61,6 +69,7 @@ async function handleJsonApiEndpoint(
 
   try {
     const [result]: OperationResponse[] = await appInstance.app.executeOperations([op], appInstance);
+
     return {
       body: convertOperationResponseToHttpResponse(request, result),
       status: STATUS_MAPPING[request.method as string]
@@ -74,19 +83,11 @@ async function handleJsonApiEndpoint(
 }
 
 function convertHttpRequestToOperation(req: VendorRequest): Operation {
-  const { id, resource, relationship } = req["urlData"];
+  const { id, resource, relationship, isRelationships } = req["urlData"];
   const type = camelize(singularize(resource));
 
-  const opMap = {
-    GET: "get",
-    POST: "add",
-    PATCH: "update",
-    PUT: "update",
-    DELETE: "remove"
-  };
-
   return {
-    op: opMap[req.method as string],
+    op: OP_MAPPING[req.method as string],
     params: parse(req["href"]),
     ref: { id, type, relationship },
     data: (req.body || {}).data
@@ -100,7 +101,7 @@ function convertOperationResponseToHttpResponse(
   const responseMethods = ["GET", "POST", "PATCH", "PUT"];
 
   if (responseMethods.includes(req.method as string)) {
-    return { data: operation.data, included: operation.included } as JsonApiDocument;
+    return { data: operation.data, included: operation.included, links: operation.links, meta: operation.meta } as JsonApiDocument;
   }
 }
 

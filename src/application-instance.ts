@@ -12,7 +12,11 @@ export default class ApplicationInstance {
   public user: User | undefined;
   public transaction: Knex.Transaction | NoOpTransaction;
 
-  constructor(public app: Application) { }
+  constructor(public app: Application, baseUrl?: URL) {
+    if (!app.serializer.linkBuilder.baseUrl && baseUrl) {
+      app.serializer.linkBuilder.baseUrl = baseUrl;
+    }
+  }
 
   async processorFor(resourceType: string): Promise<OperationProcessor<Resource> | undefined> {
     return this.app.processorFor(resourceType, this);

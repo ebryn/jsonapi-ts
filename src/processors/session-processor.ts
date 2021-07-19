@@ -1,11 +1,12 @@
 import Session from "../resources/session";
 import KnexProcessor from "./knex-processor";
-import { Operation, HasId, DEFAULT_PRIMARY_KEY, ResourceAttributes } from "../types";
+import { Operation, DEFAULT_PRIMARY_KEY, ResourceAttributes } from "../types";
 import jsonApiErrors from "../errors/json-api-errors";
 import { randomBytes } from "crypto";
 import { sign } from "jsonwebtoken";
 import Password from "../attribute-types/password";
 import pick from "../utils/pick";
+import { ResourceOperationResult } from "../operation-result";
 
 export default class SessionProcessor<T extends Session> extends KnexProcessor<T> {
   public static resourceClass = Session;
@@ -18,7 +19,7 @@ export default class SessionProcessor<T extends Session> extends KnexProcessor<T
     return true;
   }
 
-  public async add(op: Operation): Promise<HasId> {
+  public async add(op: Operation): Promise<ResourceOperationResult> {
     const fields = Object.keys(op.data?.attributes as { [key: string]: Function })
       .filter(attribute => this.resourceClass.schema.attributes[attribute] !== Password)
       .map(attribute => ({ [attribute]: op.data?.attributes[attribute] }))
@@ -61,7 +62,8 @@ export default class SessionProcessor<T extends Session> extends KnexProcessor<T
         } as { [key: string]: Function },
         relationships: {}
       },
-      userType
+      userType,
+      this.appInstance.app.serializer.linkBuilder.baseUrl
     );
 
     const token = sign(secureData, process.env.SESSION_KEY as string, {
@@ -77,6 +79,6 @@ export default class SessionProcessor<T extends Session> extends KnexProcessor<T
       id: randomBytes(16).toString("hex")
     };
 
-    return session;
+    return new ResourceOperationResult(session);
   }
 }

@@ -29,6 +29,7 @@ import Password from "./attribute-types/password";
 import JsonApiSerializer from "./serializers/serializer";
 import Addon from "./addon";
 import UserManagementAddon, { UserManagementAddonOptions } from "./addons/user-management";
+import { ResourceOperationResult, ResourceListOperationResult } from "./operation-result";
 
 export {
   // Core objects
@@ -39,6 +40,8 @@ export {
   JsonApiErrors,
   OperationProcessor,
   JsonApiSerializer,
+  ResourceOperationResult,
+  ResourceListOperationResult,
 
   // Middlewares
   jsonApiKoa,
@@ -69,7 +72,7 @@ export {
   // Addons
   Addon,
   UserManagementAddon,
-  UserManagementAddonOptions
+  UserManagementAddonOptions,
 };
 
 export * from "./types";

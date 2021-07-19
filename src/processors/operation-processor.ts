@@ -1,12 +1,14 @@
 import Resource from "../resource";
-import { HasId, Operation, EagerLoadedData } from "../types";
+import { HasId, Operation, EagerLoadedData, ComputedMeta } from "../types";
 import pick from "../utils/pick";
 import promiseHashMap from "../utils/promise-hash-map";
 import ApplicationInstance from "../application-instance";
+import { OperationResult } from "..";
 import JsonApiErrors from "../errors/json-api-errors";
 import { FunctionalOperators as operators, OperatorName } from "../utils/operators";
+import { ResourceOperationResult, ResourceListOperationResult } from "../operation-result";
 
-export default class OperationProcessor<ResourceT extends Resource> {
+export default class OperationProcessor<TResource extends Resource> {
   static resourceClass: typeof Resource;
 
   static async shouldHandle(resourceType: string): Promise<boolean> {
@@ -21,10 +23,11 @@ export default class OperationProcessor<ResourceT extends Resource> {
 
   protected attributes = {};
   protected relationships = {};
+  protected meta: ComputedMeta;
 
   constructor(public appInstance: ApplicationInstance) { }
 
-  async execute(op: Operation): Promise<ResourceT | ResourceT[] | void> {
+  async execute(op: Operation): Promise<OperationResult> {
     const action: string = op.op;
 
     if (["update", "remove"].includes(action) && !op.ref.id) {
@@ -39,7 +42,21 @@ export default class OperationProcessor<ResourceT extends Resource> {
       eagerLoadedData = await this.computeRelationshipProperties(op, eagerLoadedData);
     }
 
-    return this.convertToResources(op, result, eagerLoadedData);
+    if (result instanceof ResourceListOperationResult) {
+      const resources = await Promise.all(
+        result.records.map(record => {
+          return this.convertToResource(op, record, eagerLoadedData);
+        })
+      );
+
+      result.resources = resources;
+
+      return result;
+    }
+
+    result.resource = await this.convertToResource(op, result.record, eagerLoadedData)
+
+    return result;
   }
 
   async computeRelationshipProperties(op, eagerLoadedData) {
@@ -111,7 +128,7 @@ export default class OperationProcessor<ResourceT extends Resource> {
     return nestedRelations;
   }
 
-  async eagerLoad(op: Operation, result: ResourceT | ResourceT[]) {
+  async eagerLoad(op: Operation, result: TResource | TResource[]) {
     return {};
   }
 
@@ -194,23 +211,29 @@ export default class OperationProcessor<ResourceT extends Resource> {
     return pick(record, relationshipKeys);
   }
 
-  async convertToResources(op: Operation, records: HasId[] | HasId, eagerLoadedData: EagerLoadedData) {
-    if (Array.isArray(records)) {
-      return Promise.all(
-        records.map(record => {
-          return this.convertToResources(op, record, eagerLoadedData);
-        })
-      );
+  async getMeta(record: HasId) {
+    if (this.meta) {
+      return promiseHashMap(this.meta, key => this.meta[key].call(this, record))
     }
 
-    const record = { ...records };
+    return undefined;
+  }
+
+  async convertToResource(op: Operation, record: HasId, eagerLoadedData: EagerLoadedData) {
     const resourceClass = await this.resourceFor(op.ref.type);
 
-    const [attributes, computedAttributes, relationships, relationshipAttributes] = await Promise.all([
+    const [
+      attributes,
+      computedAttributes,
+      relationships,
+      relationshipAttributes,
+      meta
+    ] = await Promise.all([
       this.getAttributes(op, resourceClass, record, eagerLoadedData),
       this.getComputedProperties(op, resourceClass, record, eagerLoadedData),
       this.getRelationships(op, record, eagerLoadedData),
-      this.getRelationshipAttributes(op, resourceClass, record, eagerLoadedData)
+      this.getRelationshipAttributes(op, resourceClass, record, eagerLoadedData),
+      this.getMeta(record),
     ]);
 
     const resource = new resourceClass({
@@ -220,7 +243,8 @@ export default class OperationProcessor<ResourceT extends Resource> {
         ...attributes,
         ...relationshipAttributes,
         ...computedAttributes
-      }
+      },
+      meta
     });
 
     const passesFilters = await this.matchesComputedFilters(op, computedAttributes);
@@ -229,7 +253,7 @@ export default class OperationProcessor<ResourceT extends Resource> {
       resource.preventSerialization = true;
     }
 
-    return resource;
+    return resource as TResource;
   }
 
   async resourceFor(resourceType: string): Promise<typeof Resource> {
@@ -240,19 +264,19 @@ export default class OperationProcessor<ResourceT extends Resource> {
     return this.appInstance.processorFor(resourceType) as Promise<OperationProcessor<Resource>>;
   }
 
-  async get(op: Operation): Promise<HasId[] | HasId> {
-    return [];
+  async get(op: Operation): Promise<OperationResult> {
+    return Promise.reject();
   }
 
   async remove(op: Operation): Promise<void> {
     return Promise.reject();
   }
 
-  async update(op: Operation): Promise<HasId> {
+  async update(op: Operation): Promise<ResourceOperationResult> {
     return Promise.reject();
   }
 
-  async add(op: Operation): Promise<HasId> {
+  async add(op: Operation): Promise<ResourceOperationResult> {
     return Promise.reject();
   }
 }

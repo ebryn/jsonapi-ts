@@ -1,6 +1,5 @@
 import Random from "../resources/random";
-import { OperationProcessor, HasId, Operation } from "../kurier";
-import { JsonApiErrors } from "../kurier";
+import { OperationProcessor, Operation, OperationResult, ResourceOperationResult, JsonApiErrors } from "../kurier";
 
 const randomDataGenerator = {
   number: () => ({ randomNumber: Math.random() }),
@@ -11,12 +10,14 @@ const randomDataGenerator = {
 export default class RandomProcessor<ResourceT extends Random> extends OperationProcessor<ResourceT> {
   static resourceClass = Random;
 
-  async get(op: Operation): Promise<HasId | HasId[]> {
+  async get(op: Operation): Promise<OperationResult> {
     if (op.ref.id in randomDataGenerator) {
-      return {
+      const record =  {
         id: op.ref.id,
         ...randomDataGenerator[op.ref.id]()
-      }
+      };
+
+      return new ResourceOperationResult(record);
     } else {
       throw JsonApiErrors.BadRequest(`Allowed random data generators: ${Object.keys(randomDataGenerator).join(", ")}`);
     }

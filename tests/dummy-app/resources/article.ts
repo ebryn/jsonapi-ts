@@ -19,6 +19,6 @@ export default class Article extends Resource {
         hasMany: true,
         foreignKeyName: "article_id"
       }
-    }
+    },
   };
 }

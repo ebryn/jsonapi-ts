@@ -17,6 +17,7 @@ export default class ArticleProcessor<ResourceT extends Article> extends KnexPro
       return result["count(*)"];
     }
   };
+
   // relationships = {
   //   async author(this: ArticleProcessor<Article>, article: HasId) {
   //     const processor = await this.processorFor("user");

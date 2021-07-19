@@ -1,14 +1,16 @@
 import Authorize from "../decorators/authorize";
-import { Operation, HasId, DEFAULT_PRIMARY_KEY } from "../types";
+import { Operation } from "../types";
 import User from "../resources/user";
 import KnexProcessor from "./knex-processor";
 import Password from "../attribute-types/password";
 import Resource from "../resource";
+import { OperationResult } from "../types";
+import { ResourceOperationResult } from "../operation-result";
 
 export default class UserProcessor<T extends User> extends KnexProcessor<T> {
   public static resourceClass = User;
 
-  async identify(op: Operation): Promise<HasId[] | HasId> {
+  async identify(op: Operation): Promise<OperationResult> {
     return super.get({ ...op, params: {} });
   }
 
@@ -17,7 +19,7 @@ export default class UserProcessor<T extends User> extends KnexProcessor<T> {
     throw new Error("You must implement a password encryption mechanism.");
   }
 
-  async add(op: Operation): Promise<HasId> {
+  async add(op: Operation): Promise<ResourceOperationResult> {
     const fields = Object.keys(op.data?.attributes as { [key: string]: Function })
       .filter(attribute => this.resourceClass.schema.attributes[attribute] !== Password)
       .map(attribute => ({ [attribute]: op.data?.attributes[attribute] }))
@@ -41,7 +43,7 @@ export default class UserProcessor<T extends User> extends KnexProcessor<T> {
   }
 
   @Authorize()
-  async get(op: Operation): Promise<HasId[] | HasId> {
+  async get(op: Operation): Promise<OperationResult> {
     return super.get(op);
   }
 }

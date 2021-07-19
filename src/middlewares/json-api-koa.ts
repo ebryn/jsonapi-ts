@@ -27,7 +27,8 @@ export default function jsonApiKoa(app: Application, ...middlewares: Middleware[
   };
 
   const jsonApiKoa = async (ctx: Context, next: () => Promise<any>) => {
-    const appInstance = new ApplicationInstance(app);
+    const baseUrl = new URL(`${ctx.request.protocol}://${ctx.request.get("host")}`);
+    const appInstance = new ApplicationInstance(app, baseUrl);
 
     try {
       await authenticate(appInstance, ctx.request);
